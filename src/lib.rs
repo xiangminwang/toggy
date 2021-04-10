@@ -3,7 +3,9 @@
 
 extern crate chrono;
 use chrono::prelude::*;
-use std::fmt::Debug;
+use std::fmt::{Debug};
+
+extern crate libc;
 
 mod utils;
 mod game;
@@ -14,21 +16,13 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use winapi::{
-    shared::windef::{HHOOK},
     shared::minwindef::{TRUE, BOOL, DWORD, HINSTANCE, LPVOID, WPARAM, LPARAM, LRESULT},
-    um::winuser::{
-        SetWindowsHookExA,
-        UnhookWindowsHookEx,
-        CallNextHookEx,
-        // TranslateMessage,
-        // DispatchMessageA,
-        // GetMessageA,
-        // MSG,
-        HOOKPROC,
-        HC_ACTION,
-        WM_KEYUP,
-        KBDLLHOOKSTRUCT,
+    um::{
+        winnt::HANDLE,
+        synchapi::{CreateEventA, WaitForSingleObject},
+        processthreadsapi::{GetCurrentThreadId},
     },
+    um::winuser::*,
 };
 
 use std::ffi::CString;
@@ -44,7 +38,7 @@ extern "system" fn DllMain(dll_module: HINSTANCE, call_reason: DWORD, reserved: 
     const DLL_PROCESS_DETACH: DWORD = 0;
 
     match call_reason {
-        DLL_PROCESS_ATTACH => on_process_attach(),
+        DLL_PROCESS_ATTACH => on_process_attach(unsafe { GetCurrentThreadId() }),
         DLL_PROCESS_DETACH => on_process_detach(),
         _ => (),
     }
@@ -66,70 +60,76 @@ fn on_process_detach() {
     ()
 }
 
-fn on_process_attach() {
-    std::thread::spawn(move || {
-        // odd -> high players, even -> low players
-        loop {
-            if HOTKEY_PROCESSING.load(Ordering::Relaxed) {
-                continue;
-            }
-
-            let hook_id = install_hook(Some(toggle_key_proc));
-            let lp_text = CString::new("Leave me here, I'll be gone with game session.").unwrap();
-            let lp_caption = CString::new("Toggy for D2 1.13D").unwrap();
-            unsafe {
-                MessageBoxA(
-                    std::ptr::null_mut(),
-                    lp_text.as_ptr(),
-                    lp_caption.as_ptr(),
-                    MB_OK | MB_ICONINFORMATION
-                );
-            }
-
-            // let interval = std::time::Duration::from_millis(2500);
-            // std::thread::sleep(interval);
-            unsafe { UnhookWindowsHookEx(hook_id) };
-        }
-    });
-
-    // std::thread::spawn(|| {
-    //     // Listen on keyboard events
-    //     let mut msg = MSG::default();
-    //     while unsafe { GetMessageA(&mut msg, std::ptr::null_mut(), 0, 0) } != 0 {
-    //         unsafe {
-    //             TranslateMessage(&mut msg);
-    //             DispatchMessageA(&mut msg);
-    //         }
-    //         let lp_text = CString::new(format!("Result: {:?}|{:?}|{:?}|{:?}", msg.message, msg.wParam, msg.lParam, msg.time)).unwrap();
-    //         let lp_caption = CString::new("debug in loop").unwrap();
-    //         unsafe {
-    //             MessageBoxA(
-    //                 std::ptr::null_mut(),
-    //                 lp_text.as_ptr(),
-    //                 lp_caption.as_ptr(),
-    //                 MB_OK | MB_ICONINFORMATION
-    //             );
-    //         };
-    //     }
-    // });
-    // let thread_id_u64 = thread::current().id().as_u64();
-    // let bytes_u64 = thread_id_u64.get().to_le_bytes();
-    // let bytes_u32:[u8; 4] = [bytes_u64[0], bytes_u64[1], bytes_u64[2], bytes_u64[3]];
-    // let thread_id_u32 = u32::from_le_bytes(bytes_u32); // very tricky here
-}
-
-#[allow(non_snake_case)]
-pub fn install_hook(lpfn: HOOKPROC) -> HHOOK {
+fn on_process_attach(dll_thread_id: DWORD) {
     unsafe {
-        SetWindowsHookExA(
-            13, // WH_KEYBOARD:2, WH_KEYBOARD_LL:13
-            lpfn,
-            std::ptr::null_mut(),
-            0,
-            //lib_handle: HINSTANCE  std::ptr::null_mut()
-            //dwThreadId: DWORD      0
-        )
-    }
+        // Acquire new message queue from OS
+        let queue_acquired = acquire_message_queue(dll_thread_id) > 0;
+
+        if queue_acquired {
+            // Register hook for the current thread
+            let hook = SetWindowsHookExA(
+                WH_KEYBOARD,            // WH_KEYBOARD: 2, WH_KEYBOARD_LL: 13
+                Some(toggle_key_proc),
+                std::ptr::null_mut(),   // lib_handle: HINSTANCE  std::ptr::null_mut()
+                dll_thread_id,          // dwThreadId: DWORD      0
+            );
+
+            // log_file("hook address:", hook);
+
+            let _listener_thread = std::thread::spawn(move || {
+                let mut received_msg = MSG::default();
+                loop {
+                    let result = GetMessageA(&mut received_msg, std::ptr::null_mut(), WM_KEYFIRST, WM_KEYLAST);
+                    log_file("Result", result);
+                    // log_file(
+                    //     format!("hwnd: {}, message: {}, wParam: {}, lParam: {}", received_msg.hwnd as u32, received_msg.message, received_msg.wParam, received_msg.lParam), 
+                    //     format!("time: {}, ptX: {}, ptY: {}", received_msg.time, received_msg.pt.x, received_msg.pt.y)
+                    // );
+                }
+            });
+
+            // listener_thread.join().unwrap();
+
+            UnhookWindowsHookEx(hook);
+        }
+
+        
+
+        // let mut received_msg = MSG::default();
+        // while { GetMessageA(&mut received_msg, std::ptr::null_mut(), WM_KEYFIRST, WM_KEYLAST) } != 0 {
+        //     TranslateMessage(&mut received_msg);
+        //     DispatchMessageA(&mut received_msg);
+
+        //     log_file(
+        //         format!("hwnd: {}, message: {}, wParam: {}, lParam: {}", received_msg.hwnd as u32, received_msg.message, received_msg.wParam, received_msg.lParam), 
+        //         format!("time: {}, ptX: {}, ptY: {}", received_msg.time, received_msg.pt.x, received_msg.pt.y)
+        //     );
+        // }
+        
+
+        // std::thread::spawn(move || {
+        //     let thread_id = GetCurrentThreadId();            
+        //     let hook = SetWindowsHookExA(
+        //         WH_KEYBOARD,            // WH_KEYBOARD: 2, WH_KEYBOARD_LL: 13
+        //         Some(toggle_key_proc),
+        //         std::ptr::null_mut(),   // lib_handle: HINSTANCE  std::ptr::null_mut()
+        //         thread_id,              // dwThreadId: DWORD      0
+        //     );
+
+        //     let mut received_msg = MSG::default();
+        //     while { GetMessageA(&mut received_msg, std::ptr::null_mut(), 0, 0) } != 0 {
+        //         TranslateMessage(&mut received_msg);
+        //         DispatchMessageA(&mut received_msg);
+
+        //         log_file(
+        //             format!("hwnd: {}, message: {}, wParam: {}, lParam: {}", received_msg.hwnd as u32, received_msg.message, received_msg.wParam, received_msg.lParam), 
+        //             format!("time: {}, ptX: {}, ptY: {}", received_msg.time, received_msg.pt.x, received_msg.pt.y)
+        //         );
+        //     }
+
+        //     UnhookWindowsHookEx(hook);
+        // });
+    };
 }
 
 #[no_mangle]
@@ -166,38 +166,54 @@ pub fn change_playerx(number: u8, new_count: u32) {
 
     // Deal with write memory requests
     let _player_x = unsafe { d2game_dll_module.write::<u8>(1121348, number) };
-    
+
     // Read PlayerX variable
     let player_x = unsafe { d2game_dll_module.read::<u8>(1121348) };
 
-    
-    log_file(player_x, new_count);
+    log_file(format!("player X({:?})", player_x), format!("New Count({:?})", new_count));
 }
 
+pub fn acquire_message_queue(dll_thread_id: DWORD) -> i32 {
+    unsafe {
+        // Create a anonymous event
+        let event_obj: HANDLE = CreateEventA(std::ptr::null_mut(), 0, 1, std::ptr::null());
 
-pub fn log_file<T, F>(info1: T, info2: F)
+        // Will hang FOREVER here to wait for the object been signaled
+        let reason_to_fail: u32 = WaitForSingleObject(event_obj, 0xFFFFFFFF);
+        if reason_to_fail > 0 {
+            log_file("Event not being signaled??", reason_to_fail);
+        }
+
+        let custom_defined_msg_code = 0x4ABC; // 0x4ABC = 19132
+        let mut msg = MSG::default();
+        PeekMessageA(&mut msg, std::ptr::null_mut(), WM_USER, WM_USER, PM_NOREMOVE);
+        PostThreadMessageA(dll_thread_id, custom_defined_msg_code, 0, 0)
+    }
+}
+
+pub fn log_file<T, F>(debug_info1: T, debug_info2: F)
 where 
     T: Debug,
     F: Debug,
 {
-    let local_dt = Local::now().format("%H %M %S").to_string();
+    let local_dt = Local::now().format("%H-%M-%S").to_string();
     let pid = std::process::id().to_string();
     let process_path = std::env::current_exe().unwrap();
     let args: Vec<String> = std::env::args().collect();
     let log_folder_path = "C:\\games\\Diablo II\\logs";
-    let log_file_path = format!("{}\\toggy-{}.log", log_folder_path, local_dt);
+    let log_file_path = format!("{}\\tg-{}.txt", log_folder_path, format!("{}-{}", local_dt, Local::now().nanosecond()));
     let output = format!(r"[*]             Pid: {:?}
 [*]         Process: {:?}
 [*]            Args: {:?}
 [*]      Created At: {:?}
-[*]        player X: {:?}
-[*]       New Count: {:?}",
+[*]    Debug Line 1: {:?}
+[*]    Debug Line 2: {:?}",
         pid,
         process_path,
         &args[1..],
         local_dt,
-        info1,
-        info2,
+        debug_info1,
+        debug_info2,
     );
 
     create_dir_all(log_folder_path).unwrap();
