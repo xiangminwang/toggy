@@ -1,0 +1,15 @@
+[package]
+name = "toggy"
+version = "0.1.0"
+authors = ["Xiangmin Wang <wang@xiangmin.net>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# cdylib -> https://doc.rust-lang.org/nightly/edition-guide/rust-2018/platform-and-target-support/cdylib-crates-for-c-interoperability.html
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+winapi = { version = "0.3.9", features = [ "winuser", "minwindef", "impl-default", "psapi", "processthreadsapi", "handleapi" ] }
+chrono = "0.4"
