@@ -1,5 +1,4 @@
 #![cfg(windows)]
-#![feature(thread_id_value)]
 
 use std::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
 use winapi::{
